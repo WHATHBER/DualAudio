@@ -1,0 +1,18 @@
+# 构建产物
+app/out/
+app/assets/MultiAudio.dex
+build/
+*.apk
+*.aab
+
+# 签名密钥 —— 绝对不要提交
+*.keystore
+*.jks
+app/release.keystore
+
+# IDE / 系统
+.idea/
+*.iml
+.gradle/
+.DS_Store
+Thumbs.db
