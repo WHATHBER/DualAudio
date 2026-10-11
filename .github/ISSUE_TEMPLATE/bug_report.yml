@@ -1,0 +1,111 @@
+name: 兼容性反馈 / Bug 报告
+description: 报告在其他机型或系统上的运行情况（成功或失败都欢迎）
+title: "[机型] "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！双路输出能否生效**高度依赖厂商的音频 HAL 实现**，所以机型信息越完整，越能帮助定位。
+        即使是「成功了」也欢迎提交，方便整理兼容性列表。
+
+  - type: input
+    id: device
+    attributes:
+      label: 手机型号
+      placeholder: 例如 小米 14 Ultra
+    validations:
+      required: true
+
+  - type: input
+    id: rom
+    attributes:
+      label: 系统版本
+      placeholder: 例如 HyperOS 3（Android 16）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: root
+    attributes:
+      label: Root 方案
+      options:
+        - KernelSU
+        - Magisk
+        - APatch
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: bt
+    attributes:
+      label: 蓝牙耳机
+      placeholder: 例如 OPPO Enco X3（注意填写**具体型号**，不同耳机的编解码会影响延迟）
+    validations:
+      required: true
+
+  - type: input
+    id: wired
+    attributes:
+      label: 有线输出设备
+      placeholder: 例如 USB-Audio CDSP 声卡 / Type-C 转 3.5mm 转接线
+    validations:
+      required: true
+
+  - type: dropdown
+    id: result
+    attributes:
+      label: 双路输出结果
+      options:
+        - 成功 —— 两路都出声，音量可分别调节
+        - 部分成功 —— API 返回成功但只有一路出声
+        - 失败 —— 开关开启后报错或回滚
+        - 尚未测试
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      placeholder: 描述你观察到的情况，例如「点开关后弹出『双设备绑定失败』」
+    validations:
+      required: true
+
+  - type: textarea
+    id: list
+    attributes:
+      label: list 输出
+      description: |
+        运行命令并把完整结果粘贴到这里（**这是最有价值的信息**）：
+        ```
+        app_process -Djava.class.path=/data/local/tmp/MultiAudio.dex /system/bin \
+            --nice-name=multiaudio MultiAudio list
+        ```
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: sysapi
+    attributes:
+      label: sysapi 输出
+      description: |
+        如果怀疑是 API 兼容问题，请附上：
+        ```
+        app_process -Djava.class.path=/data/local/tmp/MultiAudio.dex /system/bin \
+            --nice-name=multiaudio MultiAudio sysapi
+        ```
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: log
+    attributes:
+      label: App 运行日志
+      description: 打开 App 后点击「运行日志」右侧的**复制**按钮，粘贴到这里
+      render: text
+    validations:
+      required: false

@@ -8,6 +8,8 @@
 
 基于 Android 12+ 原生「组合音频设备路由」· Material 3 界面 · 需 Root
 
+[![Build APK](https://github.com/WHATHBER/DualAudio/actions/workflows/build.yml/badge.svg)](https://github.com/WHATHBER/DualAudio/actions/workflows/build.yml)
+
 </div>
 
 ---

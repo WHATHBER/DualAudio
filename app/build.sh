@@ -61,14 +61,25 @@ echo "=== 7/8 对齐 ==="
 "$BT/zipalign" -f -p 4 "$OUT/base.apk" "$OUT/aligned.apk"
 
 echo "=== 8/8 签名 ==="
+# 本地默认自签名；CI 环境下从 Secrets 还原正式密钥，保证与已发布版本同签名
 KS="$APP/release.keystore"
-if [ ! -f "$KS" ]; then
-  echo "    生成自签名密钥（仅本地测试用，切勿提交）"
-  keytool -genkeypair -keystore "$KS" -alias dualaudio -keyalg RSA -keysize 2048 \
-    -validity 10000 -storepass dualaudio -keypass dualaudio \
+KSPASS="${KEYSTORE_PASSWORD:-dualaudio}"
+ALIAS="${KEY_ALIAS:-dualaudio}"
+KEYPASS="${KEY_PASSWORD:-dualaudio}"
+
+if [ -n "$KEYSTORE_BASE64" ]; then
+  echo "    使用 CI Secrets 提供的签名密钥"
+  KS="$OUT/release.keystore"
+  printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KS"
+elif [ ! -f "$KS" ]; then
+  echo "    生成本地自签名密钥（仅供测试，切勿提交）"
+  keytool -genkeypair -keystore "$KS" -alias "$ALIAS" -keyalg RSA -keysize 2048 \
+    -validity 10000 -storepass "$KSPASS" -keypass "$KEYPASS" \
     -dname "CN=DualAudio, O=Self, C=CN" >/dev/null 2>&1
 fi
-"$BT/apksigner" sign --ks "$KS" --ks-pass pass:dualaudio --key-pass pass:dualaudio \
+
+"$BT/apksigner" sign --ks "$KS" --ks-key-alias "$ALIAS" \
+  --ks-pass "pass:$KSPASS" --key-pass "pass:$KEYPASS" \
   --out "$OUT/DualAudio.apk" "$OUT/aligned.apk"
 "$BT/apksigner" verify "$OUT/DualAudio.apk"
 
