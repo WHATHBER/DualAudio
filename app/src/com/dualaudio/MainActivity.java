@@ -49,7 +49,7 @@ public class MainActivity extends Activity {
     private static final String VERSION = "1.0";
 
     /** 项目主页；关于页点击作者名跳转至此 */
-    private static final String REPO_URL = "https://github.com/WHATHBER/DualAudio";
+    private static final String REPO_URL = "https://github.com/lonelifox/DualAudio";
 
     /** 与 assets 里 MultiAudio.dex 的 DEX_VER 保持一致；不一致会在日志里报错 */
     private static final int DEX_VER = 21;
@@ -306,7 +306,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams a1p = lp();
         a1p.topMargin = dp(8);
         c5.addView(a1, a1p);
-        TextView a2 = tv("作者  GitHub@WHATHBER  ↗", 12, ON_SURFACE);
+        TextView a2 = tv("作者  GitHub@lonelifox  ↗", 12, ON_SURFACE);
         a2.setPaintFlags(a2.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
         a2.setClickable(true);
         a2.setFocusable(true);
