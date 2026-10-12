@@ -20,6 +20,9 @@ import java.util.*;
 
 public class MultiAudio {
 
+    /** 逻辑层版本号 —— App 会核对这个值，确保部署到手机上的不是旧 dex */
+    static final int DEX_VER = 17;
+
     static Object am;                                  // AudioManager (可能为 null)
     static Object iaudioService;                       // IAudioService (降级通道)
     static Class<?> adaClass;                          // android.media.AudioDeviceAttributes
@@ -39,34 +42,60 @@ public class MultiAudio {
             } else if ("auto".equals(args[0])) {
                 List<Object> devs = new ArrayList<Object>();
                 if (args.length == 1) {
-                    devs.addAll(autoPickDevices());   // 无参数：自动挑 蓝牙A2DP + USB
+                    // 先诊断缺什么，再挑选设备
+                    boolean hasBt = false, hasUsb = false;
+                    if (am != null) {
+                        Object[] all = (Object[]) findMethod(am.getClass(), "getDevices", 1)
+                                .invoke(am, 2);
+                        for (Object d : all) {
+                            int t = num(call(d, "getType"));
+                            if (isBtOut(t)) hasBt = true;
+                            else if (isUsbOut(t)) hasUsb = true;
+                        }
+                    }
+                    if (!hasBt && !hasUsb) {
+                        fail("no-device", "蓝牙与 USB 声卡均未就绪");
+                        return;
+                    }
+                    if (!hasBt) {
+                        fail("no-bt", "蓝牙未连接");
+                        return;
+                    }
+                    if (!hasUsb) {
+                        fail("no-usb", "USB 声卡未插入");
+                        return;
+                    }
+                    devs.addAll(autoPickDevices());
                 } else {
                     for (int i = 1; i < args.length; i++) {
                         String[] kv = args[i].split(":", 2);
                         devs.add(newAda(Integer.parseInt(kv[0]), kv.length > 1 ? kv[1] : ""));
                     }
                 }
-                if (devs.isEmpty()) {
-                    System.out.println("没找到可用的输出设备");
+                if (devs.size() < 2) {
+                    fail("few-device", "未检测到足够的输出设备");
                     return;
                 }
                 int sid = findMediaStrategyId();
                 if (sid < 0) {
-                    System.out.println("未识别到媒体策略");
+                    fail("no-strategy", "未识别到媒体策略");
                     return;
                 }
                 Object r = trySet(sid, devs);
                 if (!Boolean.TRUE.equals(r)) {
-                    System.out.println("双设备绑定失败");
+                    fail("bind-failed", "双设备绑定被系统拒绝");
                     return;
                 }
-                System.out.println("已开启双路输出，请暂停音乐后重新播放");
+                System.out.println("res=ok");
+                System.out.println("msg=已开启双路输出，请暂停音乐后重新播放");
             } else if ("autoclear".equals(args[0])) {
                 int sid = findMediaStrategyId();
                 if (sid < 0) {
-                    throw new IllegalStateException("cannot auto-detect media strategy");
+                    fail("no-strategy", "未识别到媒体策略");
+                    return;
                 }
                 clear(sid);
+                System.out.println("res=ok");
             } else if ("status".equals(args[0])) {
                 status();
             } else if ("sysapi".equals(args[0])) {
@@ -360,9 +389,9 @@ public class MultiAudio {
         Object bt = null, usb = null;
         for (Object d : devs) {
             int t = num(call(d, "getType"));
-            if (t == 8 && bt == null) {                 // BLUETOOTH_A2DP
+            if (isBtOut(t) && bt == null) {
                 bt = adaFromInfo(d);
-            } else if ((t == 22 || t == 11 || t == 12) && usb == null) { // USB_HEADSET/DEVICE/ACCESSORY
+            } else if (isUsbOut(t) && usb == null) {
                 usb = adaFromInfo(d);
             }
         }
@@ -485,14 +514,32 @@ public class MultiAudio {
 
     /* ---------------- 供 App 读取的简洁状态 ---------------- */
     static void status() {
+        System.out.println("dexver=" + DEX_VER);
         int dual = 0;
         try {
             for (Object s : productStrategies()) {
                 if (!supportsMedia(s)) continue;
                 Object pd = findMethod(am.getClass(), "getPreferredDevicesForStrategy", 1)
                         .invoke(am, s);
-                String d = String.valueOf(pd);
-                if (d.contains("bt_a2dp") && d.contains("usb_")) dual = 1;
+                // 用设备类型精确判定，不用字符串匹配 ——
+                // BLE 耳机的类型名不含 "bt_a2dp"，字符串匹配会把已绑定误判为未绑定
+                boolean hb = false, hu = false;
+                int known = 0;
+                if (pd instanceof java.util.List) {
+                    for (Object a : (java.util.List<?>) pd) {
+                        int t = num(call(a, "getType"));
+                        if (t < 0) continue;
+                        known++;
+                        if (isBtOut(t)) hb = true;
+                        else if (isUsbOut(t)) hu = true;
+                    }
+                }
+                if (known == 0) {          // 取不到类型时退回字符串匹配
+                    String d = String.valueOf(pd);
+                    hb = d.contains("bt_a2dp") || d.contains("ble_");
+                    hu = d.contains("usb_");
+                }
+                dual = (hb && hu) ? 1 : 0;
                 break;
             }
         } catch (Throwable ignore) {
@@ -523,10 +570,10 @@ public class MultiAudio {
             for (Object d : devs) {
                 int t = num(call(d, "getType"));
                 String nm = str(call(d, "getProductName"));
-                if (t == 8) {
+                if (isBtOut(t)) {
                     hasBt = true;
                     if (btName.length() == 0) btName = nm;
-                } else if (t == 22 || t == 11 || t == 12) {
+                } else if (isUsbOut(t)) {
                     hasUsb = true;
                     if (usbName.length() == 0) usbName = nm;
                 }
@@ -644,7 +691,9 @@ public class MultiAudio {
             case 11: return 0x4000;       // USB_DEVICE
             case 12: return 0x2000;       // USB_ACCESSORY
             case 22: return 0x4000000;    // USB_HEADSET
-            case 26: return 0x8000000;    // BLE_HEADSET
+            case 23: return 0x8000000;    // HEARING_AID
+            case 26: return 0x40000000;   // BLE_HEADSET
+            case 27: return 0x20000000;   // BLE_SPEAKER
             default: return 0;
         }
     }
@@ -660,6 +709,12 @@ public class MultiAudio {
 
     static int num(Object o) {
         return (o instanceof Number) ? ((Number) o).intValue() : -1;
+    }
+
+    /** 失败输出：机器可读的 res 码 + 给用户看的中文说明 */
+    static void fail(String code, String msg) {
+        System.out.println("res=" + code);
+        System.out.println("msg=" + msg);
     }
 
     static String str(Object o) {
@@ -679,23 +734,42 @@ public class MultiAudio {
         }
     }
 
+    /** 是否为蓝牙输出设备（A2DP 与 BLE 耳机） */
+    static boolean isBtOut(int t) {
+        return t == 8 || t == 26 || t == 27;
+    }
+
+    /** 是否为 USB 声卡/耳机 */
+    static boolean isUsbOut(int t) {
+        return t == 22 || t == 11 || t == 12;
+    }
+
     static String typeName(int t) {
         switch (t) {
             case 1:  return "EARPIECE";
             case 2:  return "SPEAKER";
             case 3:  return "WIRED_HEADSET";
             case 4:  return "WIRED_HEADPHONE";
+            case 5:  return "LINE_ANALOG";
+            case 6:  return "LINE_DIGITAL";
+            case 7:  return "BLUETOOTH_SCO";
             case 8:  return "BLUETOOTH_A2DP";
-            case 9:  return "BLUETOOTH_SCO";
-            case 10: return "HDMI";
+            case 9:  return "HDMI";
+            case 10: return "HDMI_ARC";
             case 11: return "USB_DEVICE";
             case 12: return "USB_ACCESSORY";
+            case 13: return "DOCK";
+            case 18: return "TELEPHONY";
+            case 19: return "AUX_LINE";
             case 22: return "USB_HEADSET";
-            case 23: return "HDMI_ARC";
-            case 25: return "HEARING_AID";
+            case 23: return "HEARING_AID";
+            case 24: return "SPEAKER_SAFE";
+            case 25: return "REMOTE_SUBMIX";
             case 26: return "BLE_HEADSET";
             case 27: return "BLE_SPEAKER";
-            case 29: return "BLE_BROADCAST";
+            case 28: return "ECHO_REFERENCE";
+            case 29: return "HDMI_EARC";
+            case 30: return "BLE_BROADCAST";
             default: return "TYPE_" + t;
         }
     }
