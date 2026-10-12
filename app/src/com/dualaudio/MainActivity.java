@@ -46,13 +46,13 @@ import java.util.concurrent.Executors;
  */
 public class MainActivity extends Activity {
 
-    private static final String VERSION = "1.0";
+    private static final String VERSION = "1.1";
 
     /** 项目主页；关于页点击作者名跳转至此 */
     private static final String REPO_URL = "https://github.com/lonelifox/DualAudio";
 
     /** 与 assets 里 MultiAudio.dex 的 DEX_VER 保持一致；不一致会在日志里报错 */
-    private static final int DEX_VER = 25;
+    private static final int DEX_VER = 26;
 
     private static final String DEX_DEST = "/data/local/tmp/MultiAudio.dex";
     private static final String AP = "ANDROID_ROOT=/system ANDROID_DATA=/data "

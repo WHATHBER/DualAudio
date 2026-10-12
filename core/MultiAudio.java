@@ -21,7 +21,7 @@ import java.util.*;
 public class MultiAudio {
 
     /** 逻辑层版本号 —— App 会核对这个值，确保部署到手机上的不是旧 dex */
-    static final int DEX_VER = 25;
+    static final int DEX_VER = 26;
 
     static Object am;                                  // AudioManager (可能为 null)
     static Object iaudioService;                       // IAudioService (降级通道)
