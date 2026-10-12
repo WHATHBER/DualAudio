@@ -21,7 +21,7 @@ import java.util.*;
 public class MultiAudio {
 
     /** 逻辑层版本号 —— App 会核对这个值，确保部署到手机上的不是旧 dex */
-    static final int DEX_VER = 19;
+    static final int DEX_VER = 20;
 
     static Object am;                                  // AudioManager (可能为 null)
     static Object iaudioService;                       // IAudioService (降级通道)
@@ -454,68 +454,81 @@ public class MultiAudio {
         if (idx < 0) idx = 0;
         if (idx > max) idx = max;
 
-        // 若系统保留了"按设备设置音量"接口，直接用（最精确）
-        for (String mn : new String[]{"setStreamVolumeIndexAS", "setStreamVolumeIndex"}) {
-            try {
-                findMethod(sysCls, mn, 3).invoke(null, 3, idx, nd);
-                System.out.println(nm + " 音量已设为 " + pct);
-                return;
-            } catch (Throwable ignore) {
-            }
-        }
-
         if (isBtOut(t)) {
-            // 蓝牙必须显式打开 AVRCP 绝对音量。
+            // 蓝牙必须开启 AVRCP 绝对音量。
             // AudioService 对 A2DP 设备把 setDeviceVolumeBehavior 解释为
             // "是否启用绝对音量同步"：传入非 ABSOLUTE 的值会把它关掉，
             // 之后手机侧音量就再也同步不到耳机（表现为"音量调不动"）。
             setDevVolumeBehavior(info,
                     volumeBehaviorConst("DEVICE_VOLUME_BEHAVIOR_ABSOLUTE", 4));
+        }
 
-            // 直接设媒体音量（双路绑定时主设备就是蓝牙，等同音量键）。
-            // 这里刻意不走"独占→恢复"那套：切换路由会让系统按多设备规则
-            // 重算音量，约 1 秒后把刚设的值改回去。
-            int before = readIndex(nd);
-            globalVolume(pct);
-            Thread.sleep(700);
-            int mid = readIndex(nd);
-            Thread.sleep(1000);
-            int end = readIndex(nd);
+        int before = readIndex(nd);
 
-            if (end == mid && mid != before) {
-                System.out.println(nm + " 音量 " + before + " → " + end
-                        + "（上限 " + max + "）");
+        // 优先用"按设备设置音量"接口：最精确，不依赖"谁是主设备"的判定
+        boolean direct = setDeviceIndex(idx, nd);
+        if (!direct) {
+            if (isBtOut(t)) {
+                globalVolume(pct);              // 双路绑定时主设备即蓝牙，等同音量键
             } else {
-                // 没生效，或被系统于 1 秒后改回 —— 改走耳机侧音量通道
-                String addr = str(call(info, "getAddress"));
-                if (avrcpSetVolume(addr, pct)) {
-                    System.out.println(nm + " 已设为 " + pct + "%（经由耳机音量通道）");
-                } else if (end != before) {
-                    System.out.println(nm + " 音量 " + before + " → " + mid
-                            + "，随后被系统改回 " + end);
-                } else {
-                    System.out.println(nm + " 音量未能改变（耳机不支持音量同步）");
+                // USB 声卡：独占 -> 设置 -> 恢复双路（它需要成为主设备才受控）
+                int sid = findMediaStrategyId();
+                List<Object> both = autoPickDevices();
+                if (sid >= 0 && !both.isEmpty()) {
+                    List<Object> one = new ArrayList<Object>();
+                    one.add(adaFromInfo(info));
+                    trySet(sid, one);
+                    Thread.sleep(500);
+                    globalVolume(pct);
+                    Thread.sleep(300);
+                    trySet(sid, both);
                 }
             }
+        }
+
+        if (!isBtOut(t)) {
+            System.out.println(nm + " 音量已设为 " + pct);
             return;
         }
 
-        // USB 等设备：独占该设备 -> 调音量 -> 恢复双设备
-        int sid = findMediaStrategyId();
-        List<Object> both = autoPickDevices();
-        if (sid >= 0 && !both.isEmpty()) {
-            List<Object> one = new ArrayList<Object>();
-            one.add(adaFromInfo(info));
-            trySet(sid, one);
-            Thread.sleep(500);
-            globalVolume(pct);
-            Thread.sleep(300);
-            trySet(sid, both);
-            Thread.sleep(300);
-            System.out.println(nm + " 音量已设为 " + pct);
-        } else {
-            System.out.println("设置失败");
+        // 蓝牙：采样确认。系统可能在约 1 秒后按多设备规则重算一遍音量，
+        // 只读一次会误判为成功，所以取两个时间点比对。
+        Thread.sleep(800);
+        int mid = readIndex(nd);
+        Thread.sleep(1200);
+        int end = readIndex(nd);
+
+        int tol = Math.max(2, max / 10);
+        if (end == mid && Math.abs(end - idx) <= tol) {
+            System.out.println(nm + " 音量 " + before + " → " + end
+                    + "（上限 " + max + "）");
+            return;
         }
+
+        // 值被改回或未生效 —— 改走耳机侧音量通道，它不受系统重算影响
+        String addr = str(call(info, "getAddress"));
+        if (avrcpSetVolume(addr, pct)) {
+            Thread.sleep(900);
+            System.out.println(nm + " 已设为 " + pct + "%（耳机音量通道，当前 "
+                    + readIndex(nd) + "/" + max + "）");
+        } else if (end != before) {
+            System.out.println(nm + " 音量 " + before + " → " + mid
+                    + "，约 1 秒后被系统改回 " + end);
+        } else {
+            System.out.println(nm + " 音量未能改变（耳机不支持音量同步）");
+        }
+    }
+
+    /** 调用"按设备设置音量"接口，成功返回 true */
+    static boolean setDeviceIndex(int idx, int nativeDev) {
+        for (String mn : new String[]{"setStreamVolumeIndexAS", "setStreamVolumeIndex"}) {
+            try {
+                findMethod(sysCls, mn, 3).invoke(null, 3, idx, nativeDev);
+                return true;
+            } catch (Throwable ignore) {
+            }
+        }
+        return false;
     }
 
     /**
