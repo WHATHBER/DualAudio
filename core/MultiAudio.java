@@ -21,7 +21,7 @@ import java.util.*;
 public class MultiAudio {
 
     /** 逻辑层版本号 —— App 会核对这个值，确保部署到手机上的不是旧 dex */
-    static final int DEX_VER = 23;
+    static final int DEX_VER = 24;
 
     static Object am;                                  // AudioManager (可能为 null)
     static Object iaudioService;                       // IAudioService (降级通道)
@@ -265,15 +265,38 @@ public class MultiAudio {
         // 走的是与「绑定」完全相同的那条通道（IAudioService.setPreferredDevicesForStrategy），
         // 因为它在真机上已验证可用；而 removePreferredDeviceForStrategy 存在
         // 「调用返回成功、绑定却没真的解除」的情况 —— 表现为 dual 仍为 1，于是关不掉。
+        // 遍历所有策略，把任何仍挂着偏好设备的都置空。
+        // 只清媒体策略是不够的 —— 实测出现过绑定落在 STRATEGY_DTMF 的情况：
+        // 那时置空媒体策略返回 0（看起来成功），但残留绑定留在别的策略上，
+        // dual 永远回不到 0，开关就再也关不掉。
+        int cleared = 0;
         try {
-            Object ias0 = iaudio();
-            Object r0 = findMethod(ias0.getClass(), "setPreferredDevicesForStrategy", 2)
-                    .invoke(ias0, Integer.valueOf(sid), new ArrayList<Object>());
-            System.out.println("已清除绑定（置空，返回 " + r0 + "）");
-            return;
-        } catch (Throwable t0) {
-            System.out.println("[warn] 置空方式失败，回退到 remove 方式: " + t0);
+            for (Object s : productStrategies()) {
+                int id = num(call(s, "getId"));
+                boolean has = false;
+                try {
+                    Object pd = findMethod(am.getClass(), "getPreferredDevicesForStrategy", 1)
+                            .invoke(am, s);
+                    if (pd instanceof java.util.List) {
+                        has = !((java.util.List<?>) pd).isEmpty();
+                    }
+                } catch (Throwable ignore) {
+                }
+                if (!has && id != sid) continue;   // 没绑定、又不是目标策略 → 不必动它
+                try {
+                    Object ias = iaudio();
+                    Object r = findMethod(ias.getClass(), "setPreferredDevicesForStrategy", 2)
+                            .invoke(ias, Integer.valueOf(id), new ArrayList<Object>());
+                    System.out.println("已清除绑定（策略 id=" + id + "，返回 " + r + "）");
+                    cleared++;
+                } catch (Throwable t) {
+                    System.out.println("[warn] 清除策略 id=" + id + " 失败: " + t);
+                }
+            }
+        } catch (Throwable t) {
+            System.out.println("[warn] 遍历策略失败: " + t);
         }
+        if (cleared > 0) return;
 
         Object strategy = tryFindStrategy(sid);
         Throwable mainErr = null;
@@ -658,8 +681,14 @@ public class MultiAudio {
         int dual = 0;
         String bindInfo = "(未取到媒体策略)";
         try {
+            int mediaId = findMediaStrategyId();
             for (Object s : productStrategies()) {
-                if (!supportsMedia(s)) continue;
+                // 只认 ID 恰好等于媒体策略的那一条。
+                // 不能用 supportsMedia() 逐个试探 —— 实测它会命中不止一条策略，
+                // 而遍历顺序上 STRATEGY_DTMF(id=6) 排在 STRATEGY_MEDIA(id=5) 前面，
+                // 于是先读到 DTMF 上那份残留绑定，把 dual 误判成 1，
+                // 表现为「开关显示开着、却怎么都关不掉」。
+                if (num(call(s, "getId")) != mediaId) continue;
                 Object pd = findMethod(am.getClass(), "getPreferredDevicesForStrategy", 1)
                         .invoke(am, s);
                 // 用设备类型精确判定，不用字符串匹配 ——
