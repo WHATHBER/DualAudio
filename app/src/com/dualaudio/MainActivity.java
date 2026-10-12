@@ -766,6 +766,7 @@ public class MainActivity extends Activity {
             public void run() {
                 String err = null;
                 String st;
+                String diag = null;
                 if (want) {
                     // auto 内部已完成设备诊断，失败时返回 res=<原因码> 与 msg=<说明>，
                     // 因此这里只需一次 app_process 调用（比原先跑两次 status 快一倍）
@@ -781,12 +782,20 @@ public class MainActivity extends Activity {
                 } else {
                     String out = sh(AP + "autoclear");
                     st = sh(AP + "status");
-                    if (!"ok".equals(field(out, "res")) || !"0".equals(field(st, "dual"))) {
+                    String resCode = field(out, "res");
+                    String dualNow = field(st, "dual");
+                    if (!"ok".equals(resCode) || !"0".equals(dualNow)) {
                         err = "关闭失败";
+                        // 诊断：把底层原始输出暴露出来，否则只有一句"关闭失败"无法定位
+                        String raw = out.trim().replace("\n", " | ");
+                        diag = "autoclear res=" + (resCode.length() == 0 ? "(无)" : resCode)
+                                + " · status dual=" + (dualNow.length() == 0 ? "(无)" : dualNow)
+                                + " · 原始输出: " + (raw.length() == 0 ? "(空)" : raw);
                     }
                 }
                 final String ferr = err;
                 final String fst = st;
+                final String fdiag = diag;
                 ui.post(new Runnable() {
                     public void run() {
                         busy = false;
@@ -798,6 +807,7 @@ public class MainActivity extends Activity {
                         if (ferr != null) {
                             Toast.makeText(MainActivity.this, ferr, Toast.LENGTH_SHORT).show();
                             log("[失败] " + ferr);
+                            if (fdiag != null) log("[diag] " + fdiag);
                         } else {
                             log("[ok] " + (want ? "双路输出已开启" : "已恢复单设备输出"));
                         }
