@@ -21,7 +21,7 @@ import java.util.*;
 public class MultiAudio {
 
     /** 逻辑层版本号 —— App 会核对这个值，确保部署到手机上的不是旧 dex */
-    static final int DEX_VER = 18;
+    static final int DEX_VER = 19;
 
     static Object am;                                  // AudioManager (可能为 null)
     static Object iaudioService;                       // IAudioService (降级通道)
@@ -471,13 +471,39 @@ public class MultiAudio {
             // 之后手机侧音量就再也同步不到耳机（表现为"音量调不动"）。
             setDevVolumeBehavior(info,
                     volumeBehaviorConst("DEVICE_VOLUME_BEHAVIOR_ABSOLUTE", 4));
+
+            // 直接设媒体音量（双路绑定时主设备就是蓝牙，等同音量键）。
+            // 这里刻意不走"独占→恢复"那套：切换路由会让系统按多设备规则
+            // 重算音量，约 1 秒后把刚设的值改回去。
+            int before = readIndex(nd);
+            globalVolume(pct);
+            Thread.sleep(700);
+            int mid = readIndex(nd);
+            Thread.sleep(1000);
+            int end = readIndex(nd);
+
+            if (end == mid && mid != before) {
+                System.out.println(nm + " 音量 " + before + " → " + end
+                        + "（上限 " + max + "）");
+            } else {
+                // 没生效，或被系统于 1 秒后改回 —— 改走耳机侧音量通道
+                String addr = str(call(info, "getAddress"));
+                if (avrcpSetVolume(addr, pct)) {
+                    System.out.println(nm + " 已设为 " + pct + "%（经由耳机音量通道）");
+                } else if (end != before) {
+                    System.out.println(nm + " 音量 " + before + " → " + mid
+                            + "，随后被系统改回 " + end);
+                } else {
+                    System.out.println(nm + " 音量未能改变（耳机不支持音量同步）");
+                }
+            }
+            return;
         }
 
-        // 兜底：独占该设备 -> 调音量 -> 恢复双设备
+        // USB 等设备：独占该设备 -> 调音量 -> 恢复双设备
         int sid = findMediaStrategyId();
         List<Object> both = autoPickDevices();
         if (sid >= 0 && !both.isEmpty()) {
-            int before = readIndex(nd);
             List<Object> one = new ArrayList<Object>();
             one.add(adaFromInfo(info));
             trySet(sid, one);
@@ -486,16 +512,45 @@ public class MultiAudio {
             Thread.sleep(300);
             trySet(sid, both);
             Thread.sleep(300);
-            int after = readIndex(nd);
-            if (after == before) {
-                System.out.println(nm + " 音量未被改变（" + before + " / " + max
-                        + "），耳机可能未启用绝对音量");
-            } else {
-                System.out.println(nm + " 音量 " + before + " → " + after
-                        + "（上限 " + max + "）");
-            }
+            System.out.println(nm + " 音量已设为 " + pct);
         } else {
             System.out.println("设置失败");
+        }
+    }
+
+    /**
+     * 直接设置蓝牙耳机自身音量（AVRCP 绝对音量通道）。
+     * 走 IBluetooth#getA2dpService() -> IBluetoothA2dp#setAbsoluteVolume()，
+     * 绕开 AudioService 的音量数据库，因而不受多设备音量重算影响。
+     */
+    static boolean avrcpSetVolume(String addr, int pct) {
+        try {
+            if (addr == null || addr.length() == 0 || addr.startsWith("00:00")) return false;
+            Class<?> baCls = Class.forName("android.bluetooth.BluetoothAdapter");
+            Object adapter = baCls.getMethod("getDefaultAdapter").invoke(null);
+            if (adapter == null) return false;
+            Object dev = baCls.getMethod("getRemoteDevice", String.class).invoke(adapter, addr);
+
+            Class<?> ib = Class.forName("android.os.IBinder");
+            Object binder = Class.forName("android.os.ServiceManager")
+                    .getMethod("getService", String.class).invoke(null, "bluetooth_manager");
+            if (binder == null) return false;
+
+            Object iBt = Class.forName("android.bluetooth.IBluetooth$Stub")
+                    .getMethod("asInterface", ib).invoke(null, binder);
+            Object a2dpBinder = findMethod(iBt.getClass(), "getA2dpService", 0).invoke(iBt);
+            if (a2dpBinder == null) return false;
+
+            Object a2dp = Class.forName("android.bluetooth.IBluetoothA2dp$Stub")
+                    .getMethod("asInterface", ib).invoke(null, a2dpBinder);
+            int v = (int) Math.round(pct * 127.0 / 100.0);
+            if (v < 0) v = 0;
+            if (v > 127) v = 127;
+            findMethod(a2dp.getClass(), "setAbsoluteVolume", 2)
+                    .invoke(a2dp, dev, Integer.valueOf(v));
+            return true;
+        } catch (Throwable t) {
+            return false;
         }
     }
 
