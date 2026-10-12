@@ -130,12 +130,20 @@ public class MainActivity extends Activity {
         pool.execute(new Runnable() {
             public void run() {
                 final String st = deployDex();
+                // 启动时顺手采一份「设备 + 产品策略 + 当前绑定」全貌：
+                // 出问题时不必再让用户去开终端跑命令
+                final String lst = sh(AP + "list");
                 ui.post(new Runnable() {
                     public void run() {
                         if (st != null) {
                             applyStatus(st);   // 复用部署时那次 status
                             // 启动时留一份完整状态快照，事后排查不必再猜现场
                             log("[snapshot] " + st.trim().replace("\n", " | "));
+                        }
+                        if (lst != null) {
+                            for (String line : lst.trim().split("\n")) {
+                                if (line.trim().length() > 0) log("[list] " + line.trim());
+                            }
                         }
                     }
                 });
@@ -680,6 +688,56 @@ public class MainActivity extends Activity {
         return sb.toString().trim();
     }
 
+    /**
+     * 启动诊断：把排查会用到的环境条件一次性留档。
+     * 兼容性问题几乎都和机型 / ROM / root 方式强相关，
+     * 与其事后反复追问，不如启动时就写进日志。
+     */
+    private void dumpEnv(String idLine) {
+        try {
+            log("[env] " + Build.MANUFACTURER + " " + Build.MODEL
+                    + " · Android " + Build.VERSION.RELEASE
+                    + " (API " + Build.VERSION.SDK_INT + ")");
+            String abi = Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "?";
+            log("[env] 构建 " + Build.DISPLAY + " · ABI " + abi + " · su " + suBin());
+            log("[env] 身份 " + idLine);
+            String vn = "?";
+            int vc = -1;
+            try {
+                android.content.pm.PackageInfo pi =
+                        getPackageManager().getPackageInfo(getPackageName(), 0);
+                vn = pi.versionName;
+                vc = pi.versionCode;
+            } catch (Throwable ignore) {
+            }
+            log("[env] App v" + vn + " (versionCode " + vc + ") · 期望 DEX_VER " + DEX_VER);
+
+            File crash = new File(getFilesDir(), "crash.txt");
+            if (crash.exists()) {
+                String c = readText(crash);
+                if (c.trim().length() > 0) {
+                    log("[crash] 上次崩溃: " + c.trim().replace("\n", " | "));
+                }
+            }
+        } catch (Throwable t) {
+            log("[env] 采集失败: " + t);
+        }
+    }
+
+    /** 读文本文件（诊断用，失败返回空串） */
+    private static String readText(File f) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            BufferedReader r = new BufferedReader(
+                    new InputStreamReader(new java.io.FileInputStream(f), "UTF-8"));
+            String l;
+            while ((l = r.readLine()) != null) sb.append(l).append('\n');
+            r.close();
+        } catch (Throwable ignore) {
+        }
+        return sb.toString();
+    }
+
     /** 部署逻辑层并返回 status 输出（顺带省掉一次调用） */
     private String deployDex() {
         try {
@@ -690,11 +748,7 @@ public class MainActivity extends Activity {
                 log("[!] 没拿到 root：请在 KernelSU 里给「双路音频」授权后重开");
                 return null;
             }
-            // 环境快照：机型 / 系统 / 构建版本 —— 兼容性问题几乎都跟这些强相关
-            log("[env] " + Build.MANUFACTURER + " " + Build.MODEL
-                    + " · Android " + Build.VERSION.RELEASE
-                    + " (API " + Build.VERSION.SDK_INT + ")"
-                    + " · " + Build.DISPLAY);
+            dumpEnv(id.trim());
             // 关键：每次都从 assets 覆盖部署，不能只在文件缺失时拷贝。
             // 否则升级 App 后手机上仍是首次安装时那份旧 dex，
             // 新功能（设备状态字段等）全部失效，且现象极难排查。
@@ -925,9 +979,9 @@ public class MainActivity extends Activity {
                 if (cur.startsWith("正在初始化")) cur = "";
                 String next = stamp() + "  " + s + "\n" + cur;
                 String[] lines = next.split("\n");
-                if (lines.length > 60) {
+                if (lines.length > 200) {
                     StringBuilder sb = new StringBuilder();
-                    for (int i = 0; i < 60; i++) sb.append(lines[i]).append('\n');
+                    for (int i = 0; i < 200; i++) sb.append(lines[i]).append('\n');
                     next = sb.toString();
                 }
                 tvLog.setText(next);
