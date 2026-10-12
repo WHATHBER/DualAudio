@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Paint;
@@ -15,6 +16,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.graphics.drawable.Drawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -44,7 +46,10 @@ import java.util.concurrent.Executors;
  */
 public class MainActivity extends Activity {
 
-    private static final String VERSION = "2.8";
+    private static final String VERSION = "1.0";
+
+    /** 项目主页；关于页点击作者名跳转至此 */
+    private static final String REPO_URL = "https://github.com/WHATHBER/DualAudio";
 
     /** 与 assets 里 MultiAudio.dex 的 DEX_VER 保持一致；不一致会在日志里报错 */
     private static final int DEX_VER = 21;
@@ -301,10 +306,28 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams a1p = lp();
         a1p.topMargin = dp(8);
         c5.addView(a1, a1p);
-        TextView a2 = tv("作者  GitHub@WHATHBER", 12, ON_VARIANT);
+        TextView a2 = tv("作者  GitHub@WHATHBER  ↗", 12, ON_SURFACE);
+        a2.setPaintFlags(a2.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
+        a2.setClickable(true);
+        a2.setFocusable(true);
+        a2.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(REPO_URL)));
+                } catch (Exception e) {
+                    log("[!] 无法打开项目地址：" + e.getMessage());
+                }
+            }
+        });
         LinearLayout.LayoutParams a2p = lp();
         a2p.topMargin = dp(4);
         c5.addView(a2, a2p);
+
+        TextView a3 = tv("仅在 小米 14 Ultra · HyperOS 3 上验证通过，其他机型大概率不可用", 11, ON_VARIANT);
+        LinearLayout.LayoutParams a3p = lp();
+        a3p.topMargin = dp(10);
+        c5.addView(a3, a3p);
+
         root.addView(c5, cardLp(16));
 
         return scroll;
