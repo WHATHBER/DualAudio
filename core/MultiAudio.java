@@ -21,7 +21,7 @@ import java.util.*;
 public class MultiAudio {
 
     /** 逻辑层版本号 —— App 会核对这个值，确保部署到手机上的不是旧 dex */
-    static final int DEX_VER = 17;
+    static final int DEX_VER = 18;
 
     static Object am;                                  // AudioManager (可能为 null)
     static Object iaudioService;                       // IAudioService (降级通道)
@@ -446,16 +446,15 @@ public class MultiAudio {
             return;
         }
         String nm = str(call(info, "getProductName"));
-        int nd = nativeDevice(num(call(info, "getType")));
+        int t = num(call(info, "getType"));
+        int nd = nativeDevice(t);
 
-        // 尽量切成软件音量，硬件增益才受控
-        setDevVolumeBehavior(info, 0 /* VARIABLE */);
-
-        // 若存在"按设备设置音量"接口，直接用它
         int max = streamMax();
         int idx = (int) Math.round(pct * max / 100.0);
         if (idx < 0) idx = 0;
         if (idx > max) idx = max;
+
+        // 若系统保留了"按设备设置音量"接口，直接用（最精确）
         for (String mn : new String[]{"setStreamVolumeIndexAS", "setStreamVolumeIndex"}) {
             try {
                 findMethod(sysCls, mn, 3).invoke(null, 3, idx, nd);
@@ -465,10 +464,20 @@ public class MultiAudio {
             }
         }
 
+        if (isBtOut(t)) {
+            // 蓝牙必须显式打开 AVRCP 绝对音量。
+            // AudioService 对 A2DP 设备把 setDeviceVolumeBehavior 解释为
+            // "是否启用绝对音量同步"：传入非 ABSOLUTE 的值会把它关掉，
+            // 之后手机侧音量就再也同步不到耳机（表现为"音量调不动"）。
+            setDevVolumeBehavior(info,
+                    volumeBehaviorConst("DEVICE_VOLUME_BEHAVIOR_ABSOLUTE", 4));
+        }
+
         // 兜底：独占该设备 -> 调音量 -> 恢复双设备
         int sid = findMediaStrategyId();
         List<Object> both = autoPickDevices();
         if (sid >= 0 && !both.isEmpty()) {
+            int before = readIndex(nd);
             List<Object> one = new ArrayList<Object>();
             one.add(adaFromInfo(info));
             trySet(sid, one);
@@ -477,9 +486,26 @@ public class MultiAudio {
             Thread.sleep(300);
             trySet(sid, both);
             Thread.sleep(300);
-            System.out.println(nm + " 音量已设为 " + pct);
+            int after = readIndex(nd);
+            if (after == before) {
+                System.out.println(nm + " 音量未被改变（" + before + " / " + max
+                        + "），耳机可能未启用绝对音量");
+            } else {
+                System.out.println(nm + " 音量 " + before + " → " + after
+                        + "（上限 " + max + "）");
+            }
         } else {
             System.out.println("设置失败");
+        }
+    }
+
+    /** 反射读取 AudioManager 里的音量行为常量，避免硬编码取值出错 */
+    static int volumeBehaviorConst(String name, int fallback) {
+        try {
+            return Class.forName("android.media.AudioManager")
+                    .getField(name).getInt(null);
+        } catch (Throwable t) {
+            return fallback;
         }
     }
 
