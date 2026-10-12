@@ -21,7 +21,7 @@ import java.util.*;
 public class MultiAudio {
 
     /** 逻辑层版本号 —— App 会核对这个值，确保部署到手机上的不是旧 dex */
-    static final int DEX_VER = 22;
+    static final int DEX_VER = 23;
 
     static Object am;                                  // AudioManager (可能为 null)
     static Object iaudioService;                       // IAudioService (降级通道)
@@ -261,6 +261,20 @@ public class MultiAudio {
     }
 
     static void clear(int sid) throws Exception {
+        // 首选：把媒体策略的偏好设备显式置空。
+        // 走的是与「绑定」完全相同的那条通道（IAudioService.setPreferredDevicesForStrategy），
+        // 因为它在真机上已验证可用；而 removePreferredDeviceForStrategy 存在
+        // 「调用返回成功、绑定却没真的解除」的情况 —— 表现为 dual 仍为 1，于是关不掉。
+        try {
+            Object ias0 = iaudio();
+            Object r0 = findMethod(ias0.getClass(), "setPreferredDevicesForStrategy", 2)
+                    .invoke(ias0, Integer.valueOf(sid), new ArrayList<Object>());
+            System.out.println("已清除绑定（置空，返回 " + r0 + "）");
+            return;
+        } catch (Throwable t0) {
+            System.out.println("[warn] 置空方式失败，回退到 remove 方式: " + t0);
+        }
+
         Object strategy = tryFindStrategy(sid);
         Throwable mainErr = null;
         if (am != null && strategy != null) {
@@ -642,6 +656,7 @@ public class MultiAudio {
     static void status() {
         System.out.println("dexver=" + DEX_VER);
         int dual = 0;
+        String bindInfo = "(未取到媒体策略)";
         try {
             for (Object s : productStrategies()) {
                 if (!supportsMedia(s)) continue;
@@ -666,9 +681,15 @@ public class MultiAudio {
                     hu = d.contains("usb_");
                 }
                 dual = (hb && hu) ? 1 : 0;
+                // 记录判定依据：dual 算错时能一眼看出是哪一步出的问题
+                bindInfo = "strategyId=" + num(call(s, "getId"))
+                        + " 有效设备数=" + known
+                        + " 含蓝牙=" + hb + " 含USB=" + hu
+                        + " 列表=" + pd;
                 break;
             }
-        } catch (Throwable ignore) {
+        } catch (Throwable t) {
+            bindInfo = "(异常) " + t;
         }
         System.out.println("dual=" + dual);
 
@@ -689,13 +710,16 @@ public class MultiAudio {
         }
 
         // 设备在线状态 + 设备名
+        boolean hasBt = false, hasUsb = false;
+        String btName = "", usbName = "";
+        StringBuilder devList = new StringBuilder();
         try {
-            boolean hasBt = false, hasUsb = false;
-            String btName = "", usbName = "";
             Object[] devs = (Object[]) findMethod(am.getClass(), "getDevices", 1).invoke(am, 2);
             for (Object d : devs) {
                 int t = num(call(d, "getType"));
                 String nm = str(call(d, "getProductName"));
+                if (devList.length() > 0) devList.append(" / ");
+                devList.append(t).append(":").append(nm);
                 if (isBtOut(t)) {
                     hasBt = true;
                     if (btName.length() == 0) btName = nm;
@@ -704,15 +728,21 @@ public class MultiAudio {
                     if (usbName.length() == 0) usbName = nm;
                 }
             }
-            System.out.println("btdev=" + (hasBt ? 1 : 0));
-            System.out.println("usbdev=" + (hasUsb ? 1 : 0));
-            System.out.println("btname=" + btName);
-            System.out.println("usbname=" + usbName);
         } catch (Throwable t) {
-            System.out.println("btdev=0");
-            System.out.println("usbdev=0");
-            System.out.println("btname=");
-            System.out.println("usbname=");
+            devList.append("(枚举失败) ").append(t);
+        }
+        System.out.println("btdev=" + (hasBt ? 1 : 0));
+        System.out.println("usbdev=" + (hasUsb ? 1 : 0));
+        System.out.println("btname=" + btName);
+        System.out.println("usbname=" + usbName);
+
+        // 残留绑定诊断：媒体策略仍绑着双路，但输出设备全都离线了。
+        // 这正是「开关显示为开、点关闭又关不掉」的现场，
+        // 把判定依据和实际设备列出来，就不必再靠猜。
+        if (dual == 1 && !hasBt && !hasUsb) {
+            System.out.println("msg=检测到残留绑定：输出设备均已离线，媒体策略却仍绑定着双路");
+            System.out.println("bind=" + bindInfo);
+            System.out.println("devs=" + devList);
         }
     }
 

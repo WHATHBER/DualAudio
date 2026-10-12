@@ -52,7 +52,7 @@ public class MainActivity extends Activity {
     private static final String REPO_URL = "https://github.com/lonelifox/DualAudio";
 
     /** 与 assets 里 MultiAudio.dex 的 DEX_VER 保持一致；不一致会在日志里报错 */
-    private static final int DEX_VER = 22;
+    private static final int DEX_VER = 23;
 
     private static final String DEX_DEST = "/data/local/tmp/MultiAudio.dex";
     private static final String AP = "ANDROID_ROOT=/system ANDROID_DATA=/data "
@@ -132,7 +132,11 @@ public class MainActivity extends Activity {
                 final String st = deployDex();
                 ui.post(new Runnable() {
                     public void run() {
-                        if (st != null) applyStatus(st);   // 复用部署时那次 status
+                        if (st != null) {
+                            applyStatus(st);   // 复用部署时那次 status
+                            // 启动时留一份完整状态快照，事后排查不必再猜现场
+                            log("[snapshot] " + st.trim().replace("\n", " | "));
+                        }
                     }
                 });
             }
@@ -686,6 +690,11 @@ public class MainActivity extends Activity {
                 log("[!] 没拿到 root：请在 KernelSU 里给「双路音频」授权后重开");
                 return null;
             }
+            // 环境快照：机型 / 系统 / 构建版本 —— 兼容性问题几乎都跟这些强相关
+            log("[env] " + Build.MANUFACTURER + " " + Build.MODEL
+                    + " · Android " + Build.VERSION.RELEASE
+                    + " (API " + Build.VERSION.SDK_INT + ")"
+                    + " · " + Build.DISPLAY);
             // 关键：每次都从 assets 覆盖部署，不能只在文件缺失时拷贝。
             // 否则升级 App 后手机上仍是首次安装时那份旧 dex，
             // 新功能（设备状态字段等）全部失效，且现象极难排查。
