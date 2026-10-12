@@ -21,7 +21,7 @@ import java.util.*;
 public class MultiAudio {
 
     /** 逻辑层版本号 —— App 会核对这个值，确保部署到手机上的不是旧 dex */
-    static final int DEX_VER = 21;
+    static final int DEX_VER = 22;
 
     static Object am;                                  // AudioManager (可能为 null)
     static Object iaudioService;                       // IAudioService (降级通道)
@@ -94,7 +94,14 @@ public class MultiAudio {
                     fail("no-strategy", "未识别到媒体策略");
                     return;
                 }
-                clear(sid);
+                try {
+                    clear(sid);
+                } catch (Throwable t) {
+                    // 清除接口失败不一定是真失败：也可能本来就没有绑定。
+                    // 「是否已经退出双路」由 status 的 dual 判定，这里只负责把原因说出来，
+                    // 不再让异常冒到 main 导致整个进程以无 res= 的方式退出。
+                    System.out.println("msg=清除绑定接口异常：" + t);
+                }
                 System.out.println("res=ok");
             } else if ("status".equals(args[0])) {
                 // status fix：顺带确保蓝牙绝对音量处于开启状态。
@@ -255,19 +262,29 @@ public class MultiAudio {
 
     static void clear(int sid) throws Exception {
         Object strategy = tryFindStrategy(sid);
+        Throwable mainErr = null;
         if (am != null && strategy != null) {
             try {
-                Object r = findMethod(am.getClass(), "removePreferredDeviceForStrategy", 1)
+                findMethod(am.getClass(), "removePreferredDeviceForStrategy", 1)
                         .invoke(am, strategy);
                 System.out.println("已清除绑定");
                 return;
-            } catch (Throwable ignore) {
+            } catch (Throwable t) {
+                // 注意：这里以前是静默吞掉异常，导致失败原因彻底丢失，
+                // 上层只能看到一个笼统的「关闭失败」。必须把原因带出去。
+                mainErr = t;
             }
         }
         Object ias = iaudio();
-        findMethod(ias.getClass(), "removePreferredDeviceForStrategy", 1)
-                .invoke(ias, Integer.valueOf(sid));
-        System.out.println("已清除绑定");
+        try {
+            findMethod(ias.getClass(), "removePreferredDeviceForStrategy", 1)
+                    .invoke(ias, Integer.valueOf(sid));
+            System.out.println("已清除绑定");
+        } catch (Throwable t) {
+            System.out.println("[warn] 清除绑定失败 · AudioManager 路径: " + mainErr);
+            System.out.println("[warn] 清除绑定失败 · IAudioService 路径: " + t);
+            throw t;
+        }
     }
 
     /* ---------------- 工具 ---------------- */

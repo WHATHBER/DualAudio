@@ -52,7 +52,7 @@ public class MainActivity extends Activity {
     private static final String REPO_URL = "https://github.com/lonelifox/DualAudio";
 
     /** 与 assets 里 MultiAudio.dex 的 DEX_VER 保持一致；不一致会在日志里报错 */
-    private static final int DEX_VER = 21;
+    private static final int DEX_VER = 22;
 
     private static final String DEX_DEST = "/data/local/tmp/MultiAudio.dex";
     private static final String AP = "ANDROID_ROOT=/system ANDROID_DATA=/data "
@@ -81,6 +81,8 @@ public class MainActivity extends Activity {
     private LinearLayout cardUsb, cardRedo;
     private boolean suppress = false;
     private volatile boolean busy = false;
+    /** 两个输出设备是否都在线；开启的前提，缺一不可 */
+    private volatile boolean devReady = false;
 
     private static String apProcess() {
         if (new File("/system/bin/app_process64").exists()) return "/system/bin/app_process64";
@@ -757,6 +759,15 @@ public class MainActivity extends Activity {
      */
     private void onDualToggle(final boolean want) {
         if (busy) return;
+        if (want && !devReady) {
+            // 设备不齐备时，「开启」的前提根本不存在。
+            // UI 已按此禁用开关，这里再兜一层：任何路径都不应把状态机
+            // 带进「看起来开着、其实没绑上」的脏状态。
+            swDual.setChecked(false);
+            Toast.makeText(this, "请先连接蓝牙耳机与 USB 声卡", Toast.LENGTH_SHORT).show();
+            log("[!] 开启被拒绝：蓝牙与声卡未同时就绪");
+            return;
+        }
         busy = true;
         swDual.setEnabled(false);
         swDual.setAlpha(0.45f);
@@ -784,13 +795,20 @@ public class MainActivity extends Activity {
                     st = sh(AP + "status");
                     String resCode = field(out, "res");
                     String dualNow = field(st, "dual");
-                    if (!"ok".equals(resCode) || !"0".equals(dualNow)) {
+                    // 关闭是否成功，以「当前是否仍处于双路」为准：
+                    // 清除绑定是幂等操作，接口报错不代表没清掉（也可能本来就没有绑定），
+                    // 反过来只要 dual 还没归零，就确实没关成。
+                    if (!"0".equals(dualNow)) {
                         err = "关闭失败";
-                        // 诊断：把底层原始输出暴露出来，否则只有一句"关闭失败"无法定位
                         String raw = out.trim().replace("\n", " | ");
                         diag = "autoclear res=" + (resCode.length() == 0 ? "(无)" : resCode)
                                 + " · status dual=" + (dualNow.length() == 0 ? "(无)" : dualNow)
                                 + " · 原始输出: " + (raw.length() == 0 ? "(空)" : raw);
+                    } else if (!"ok".equals(resCode)) {
+                        // 已确认退出双路，接口虽报了异常但不影响结果，记一笔备查
+                        diag = "已退出双路，但 autoclear 的 res="
+                                + (resCode.length() == 0 ? "(无)" : resCode)
+                                + " · " + out.trim().replace("\n", " | ");
                     }
                 }
                 final String ferr = err;
@@ -807,10 +825,10 @@ public class MainActivity extends Activity {
                         if (ferr != null) {
                             Toast.makeText(MainActivity.this, ferr, Toast.LENGTH_SHORT).show();
                             log("[失败] " + ferr);
-                            if (fdiag != null) log("[diag] " + fdiag);
                         } else {
                             log("[ok] " + (want ? "双路输出已开启" : "已恢复单设备输出"));
                         }
+                        if (fdiag != null) log("[diag] " + fdiag);
                     }
                 });
             }
@@ -833,6 +851,17 @@ public class MainActivity extends Activity {
 
         // 两个设备都齐了才需要「重新应用」
         fold(cardRedo, btDev == 1 && usbDev == 1);
+
+        // 开关的可操作性：
+        //   开启的前提是蓝牙与声卡**同时**在线 —— 缺一个就不该给拨，否则用户会拨出一个
+        //   "看起来开着、实际没绑上"的脏状态，之后想关都关不掉；
+        //   已经开启时始终允许关闭，不然绑定清不掉。
+        devReady = (btDev == 1 && usbDev == 1);
+        boolean canOperate = devReady || dual == 1;
+        if (!busy) {
+            swDual.setEnabled(canOperate);
+            swDual.setAlpha(canOperate ? 1f : 0.45f);
+        }
 
         suppress = false;
 
