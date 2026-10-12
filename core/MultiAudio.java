@@ -21,7 +21,7 @@ import java.util.*;
 public class MultiAudio {
 
     /** 逻辑层版本号 —— App 会核对这个值，确保部署到手机上的不是旧 dex */
-    static final int DEX_VER = 24;
+    static final int DEX_VER = 25;
 
     static Object am;                                  // AudioManager (可能为 null)
     static Object iaudioService;                       // IAudioService (降级通道)
@@ -273,24 +273,18 @@ public class MultiAudio {
         try {
             for (Object s : productStrategies()) {
                 int id = num(call(s, "getId"));
-                boolean has = false;
-                try {
-                    Object pd = findMethod(am.getClass(), "getPreferredDevicesForStrategy", 1)
-                            .invoke(am, s);
-                    if (pd instanceof java.util.List) {
-                        has = !((java.util.List<?>) pd).isEmpty();
-                    }
-                } catch (Throwable ignore) {
-                }
-                if (!has && id != sid) continue;   // 没绑定、又不是目标策略 → 不必动它
+                // 无条件置空每一条策略。
+                // 刻意不做「先读一遍看有没有绑定再决定」——实测同一个策略在不同进程里
+                // 读出的绑定状态会不一致（幽灵绑定），靠读取结果做判断必然会漏清。
+                // 置空是幂等操作，全清一遍最可靠。
                 try {
                     Object ias = iaudio();
                     Object r = findMethod(ias.getClass(), "setPreferredDevicesForStrategy", 2)
                             .invoke(ias, Integer.valueOf(id), new ArrayList<Object>());
-                    System.out.println("已清除绑定（策略 id=" + id + "，返回 " + r + "）");
+                    System.out.println("已置空策略 id=" + id + "（返回 " + r + "）");
                     cleared++;
                 } catch (Throwable t) {
-                    System.out.println("[warn] 清除策略 id=" + id + " 失败: " + t);
+                    System.out.println("[warn] 置空策略 id=" + id + " 失败: " + t);
                 }
             }
         } catch (Throwable t) {
@@ -720,7 +714,10 @@ public class MultiAudio {
         } catch (Throwable t) {
             bindInfo = "(异常) " + t;
         }
-        System.out.println("dual=" + dual);
+        // dual 的最终值要等设备枚举完才能定：
+        // 绑定里躺着的是「已经拔掉的设备」（幽灵绑定）时，实际并没有双路输出，
+        // 那种情况应当算「已关闭」，否则开关会永远停在「开」且关不掉。
+        final boolean dualRaw = (dual == 1);
 
         try {
             String out = execCapture("tinymix -D 1 'PCM Playback Volume'");
@@ -740,6 +737,7 @@ public class MultiAudio {
 
         // 设备在线状态 + 设备名
         boolean hasBt = false, hasUsb = false;
+        boolean devEnumOk = false;
         String btName = "", usbName = "";
         StringBuilder devList = new StringBuilder();
         try {
@@ -757,6 +755,7 @@ public class MultiAudio {
                     if (usbName.length() == 0) usbName = nm;
                 }
             }
+            devEnumOk = true;
         } catch (Throwable t) {
             devList.append("(枚举失败) ").append(t);
         }
@@ -765,11 +764,26 @@ public class MultiAudio {
         System.out.println("btname=" + btName);
         System.out.println("usbname=" + usbName);
 
-        // 残留绑定诊断：媒体策略仍绑着双路，但输出设备全都离线了。
-        // 这正是「开关显示为开、点关闭又关不掉」的现场，
-        // 把判定依据和实际设备列出来，就不必再靠猜。
-        if (dual == 1 && !hasBt && !hasUsb) {
-            System.out.println("msg=检测到残留绑定：输出设备均已离线，媒体策略却仍绑定着双路");
+        // 幽灵绑定不算双路：绑定记录还在、但设备都不在线时，实际并没有双路输出。
+        // 枚举失败时不要据此判否，否则会误判成「没开启」。
+        int dualFinal = (dualRaw && (!devEnumOk || (hasBt && hasUsb))) ? 1 : 0;
+        System.out.println("dual=" + dualFinal);
+
+        // 把「任何仍留有绑定的策略」都列出来 —— 排查时最需要看的就是这一条，
+        // 实测出现过绑定落在 STRATEGY_DTMF 而不是媒体策略上的情况。
+        try {
+            for (Object s2 : productStrategies()) {
+                Object pd2 = findMethod(am.getClass(), "getPreferredDevicesForStrategy", 1)
+                        .invoke(am, s2);
+                if (pd2 instanceof java.util.List && !((java.util.List<?>) pd2).isEmpty()) {
+                    System.out.println("bound=策略" + num(call(s2, "getId")) + " -> " + pd2);
+                }
+            }
+        } catch (Throwable ignore) {
+        }
+
+        if (dualRaw && (!hasBt || !hasUsb)) {
+            System.out.println("msg=残留绑定：输出设备未同时在线，但策略上仍留有绑定（已按「已关闭」处理）");
             System.out.println("bind=" + bindInfo);
             System.out.println("devs=" + devList);
         }
