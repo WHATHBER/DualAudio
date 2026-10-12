@@ -44,7 +44,10 @@ import java.util.concurrent.Executors;
  */
 public class MainActivity extends Activity {
 
-    private static final String VERSION = "2.2";
+    private static final String VERSION = "2.8";
+
+    /** 与 assets 里 MultiAudio.dex 的 DEX_VER 保持一致；不一致会在日志里报错 */
+    private static final int DEX_VER = 21;
 
     private static final String DEX_DEST = "/data/local/tmp/MultiAudio.dex";
     private static final String AP = "ANDROID_ROOT=/system ANDROID_DATA=/data "
@@ -68,9 +71,9 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
 
     private MiniSwitch swDual;
-    private SeekBar sbUsb, sbBt;
-    private TextView tvUsb, tvBt, tvLog, devState, btTitle;
-    private LinearLayout cardUsb, cardBt, cardRedo;
+    private SeekBar sbUsb;
+    private TextView tvUsb, tvLog, devState;
+    private LinearLayout cardUsb, cardRedo;
     private boolean suppress = false;
     private volatile boolean busy = false;
 
@@ -119,10 +122,10 @@ public class MainActivity extends Activity {
         }
         pool.execute(new Runnable() {
             public void run() {
-                deployDex();
+                final String st = deployDex();
                 ui.post(new Runnable() {
                     public void run() {
-                        refresh();
+                        if (st != null) applyStatus(st);   // 复用部署时那次 status
                     }
                 });
             }
@@ -218,38 +221,12 @@ public class MainActivity extends Activity {
         c2.addView(sbUsb, sbp);
         root.addView(c2, cardLp(12));
 
-        /* --- 卡片 3：蓝牙音量（未连接时折叠，标题带设备名） --- */
-        LinearLayout c3 = card();
-        cardBt = c3;
-        btTitle = tv("蓝牙耳机 音量", 12, ON_VARIANT);
-        c3.addView(btTitle);
-        tvBt = tv("--", 32, ON_SURFACE);
-        tvBt.setTypeface(med());
-        LinearLayout.LayoutParams bvp = lp();
-        bvp.topMargin = dp(6);
-        c3.addView(tvBt, bvp);
-        sbBt = new SeekBar(this);
-        sbBt.setMax(100);
-        sbBt.setProgressDrawable(seekTrack());
-        sbBt.setThumb(seekThumb());
-        sbBt.setSplitTrack(false);
-        LinearLayout.LayoutParams bbp = lp();
-        bbp.topMargin = dp(12);
-        sbBt.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onProgressChanged(SeekBar s, int v, boolean u) {
-                tvBt.setText(String.valueOf(v));
-            }
-
-            public void onStartTrackingTouch(SeekBar s) {
-            }
-
-            public void onStopTrackingTouch(SeekBar s) {
-                final int v = s.getProgress();
-                execCmd(AP + "vol bt " + v, "蓝牙音量 -> " + v);
-            }
-        });
-        c3.addView(sbBt, bbp);
-        root.addView(c3, cardLp(12));
+        /*
+         * 这里原本有"蓝牙耳机音量"滑块，已移除。
+         * 实测小米 ROM 会在设置后约 1 秒按多设备规则重算音量，
+         * 程序侧写入的蓝牙音量会被系统改回；而手机音量键走的是
+         * 系统自身的音量通路，不受影响。所以蓝牙音量交给音量键。
+         */
 
         /* --- 重新应用（两个设备都在线时才出现） --- */
         LinearLayout redoBox = new LinearLayout(this);
@@ -259,17 +236,14 @@ public class MainActivity extends Activity {
         LinearLayout bRedo = iconButton("重新应用", true, false);
         bRedo.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
-                int u = sbUsb.getProgress();
-                int bt = sbBt.getProgress();
-                execCmd(AP + "auto; " + AP + "vol bt " + bt + "; "
-                                + "tinymix -D 1 'PCM Playback Volume' " + u + " " + u,
-                        "重新应用：重建双路 + 套用音量");
+                // 只重建绑定，不套用滑块上的音量值 ——
+                // 滑块可能因读取失败而停在 0，套用会把音量误设成静音
+                execCmd(AP + "auto", "重新应用：重建双设备绑定");
             }
         });
         redoBox.addView(bRedo);
 
-        TextView nA = tv("蓝牙断开重连后点这里，重新绑定双设备并套用上面的音量",
-                11, ON_VARIANT);
+        TextView nA = tv("蓝牙断开重连后点这里，重新绑定双设备", 11, ON_VARIANT);
         nA.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams nAp = lp();
         nAp.topMargin = dp(10);
@@ -654,10 +628,10 @@ public class MainActivity extends Activity {
         log("> " + tag);
         pool.execute(new Runnable() {
             public void run() {
-                final String out = sh(cmd);
+                final String out = clean(sh(cmd));
                 ui.post(new Runnable() {
                     public void run() {
-                        if (out.trim().length() > 0) log(out.trim());
+                        if (out.length() > 0) log(out);
                         refresh();
                     }
                 });
@@ -665,30 +639,64 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void deployDex() {
+    /** 去掉只给程序解析用的机器行；msg= 保留正文 */
+    private static String clean(String out) {
+        StringBuilder sb = new StringBuilder();
+        for (String raw : out.split("\n")) {
+            String s = raw.trim();
+            if (s.length() == 0 || s.startsWith("res=")) continue;
+            if (s.startsWith("msg=")) s = s.substring(4).trim();
+            if (s.length() > 0) sb.append(s).append('\n');
+        }
+        return sb.toString().trim();
+    }
+
+    /** 部署逻辑层并返回 status 输出（顺带省掉一次调用） */
+    private String deployDex() {
         try {
             String id = sh("id");
             if (id.contains("uid=0")) {
                 log("[ok] root 权限正常");
             } else {
                 log("[!] 没拿到 root：请在 KernelSU 里给「双路音频」授权后重开");
-                return;
+                return null;
             }
+            // 关键：每次都从 assets 覆盖部署，不能只在文件缺失时拷贝。
+            // 否则升级 App 后手机上仍是首次安装时那份旧 dex，
+            // 新功能（设备状态字段等）全部失效，且现象极难排查。
             File f = new File(getFilesDir(), "MultiAudio.dex");
-            if (!f.exists() || f.length() == 0) {
-                InputStream in = getAssets().open("MultiAudio.dex");
-                FileOutputStream out = new FileOutputStream(f);
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-                out.close();
-                in.close();
+            InputStream in = getAssets().open("MultiAudio.dex");
+            File tmp = new File(getFilesDir(), "MultiAudio.dex.tmp");
+            FileOutputStream out = new FileOutputStream(tmp);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            out.close();
+            in.close();
+            if (f.exists() && !f.delete()) {
+                log("[!] 无法替换旧逻辑层文件");
+            }
+            if (!tmp.renameTo(f)) {
+                log("[!] 逻辑层写入失败");
+                return null;
             }
             String r = sh("mkdir -p /data/local/tmp && cp '" + f.getAbsolutePath() + "' "
                     + DEX_DEST + " && chmod 644 " + DEX_DEST);
             if (r.trim().length() > 0) log("[deploy] " + r.trim());
+
+            // 部署后核对版本，确保手机跑的真是这一份；
+            // status fix 会顺带确保蓝牙绝对音量开启（否则音量键也调不动蓝牙）
+            String st = sh(AP + "status fix");
+            int v = pi(field(st, "dexver"), -1);
+            if (v == DEX_VER) {
+                log("[ok] 逻辑层 v" + v + " 已就绪");
+            } else {
+                log("[!] 逻辑层版本异常（期望 v" + DEX_VER + "，实际 v" + v + "）");
+            }
+            return st;
         } catch (Throwable t) {
             log("[deploy ERR] " + t);
+            return null;
         }
     }
 
@@ -734,38 +742,42 @@ public class MainActivity extends Activity {
         pool.execute(new Runnable() {
             public void run() {
                 String err = null;
-                boolean finalState;
+                String st;
                 if (want) {
-                    int[] s = parseStatus(sh(AP + "status"));
-                    if (s[3] != 1) {
-                        err = "蓝牙未连接";
-                    } else if (s[4] != 1) {
-                        err = "USB 声卡未插入";
+                    // auto 内部已完成设备诊断，失败时返回 res=<原因码> 与 msg=<说明>，
+                    // 因此这里只需一次 app_process 调用（比原先跑两次 status 快一倍）
+                    String out = sh(AP + "auto");
+                    st = sh(AP + "status");
+                    if ("ok".equals(field(out, "res"))) {
+                        // 复核：接口返回成功不代表策略真的记住了绑定
+                        if (!"1".equals(field(st, "dual"))) err = "双设备绑定未生效";
                     } else {
-                        sh(AP + "auto");
-                        err = (parseStatus(sh(AP + "status"))[0] == 1)
-                                ? null : "双设备绑定失败";
+                        String m = field(out, "msg");
+                        err = (m != null && m.length() > 0) ? m : "开启失败";
                     }
-                    finalState = (err == null);
                 } else {
-                    sh(AP + "autoclear");
-                    err = (parseStatus(sh(AP + "status"))[0] == 0)
-                            ? null : "关闭双路输出失败";
-                    finalState = (err != null);   // 关闭失败则回滚为「开」
+                    String out = sh(AP + "autoclear");
+                    st = sh(AP + "status");
+                    if (!"ok".equals(field(out, "res")) || !"0".equals(field(st, "dual"))) {
+                        err = "关闭失败";
+                    }
                 }
                 final String ferr = err;
-                final boolean fst = finalState;
+                final String fst = st;
                 ui.post(new Runnable() {
                     public void run() {
                         busy = false;
-                        swDual.setChecked(fst);
                         swDual.setEnabled(true);
                         swDual.setAlpha(1f);
+                        // 开关位置由真实状态决定（applyStatus 内部设置），
+                        // 因此失败时它会自动回到实际状态
+                        applyStatus(fst);
                         if (ferr != null) {
                             Toast.makeText(MainActivity.this, ferr, Toast.LENGTH_SHORT).show();
                             log("[失败] " + ferr);
+                        } else {
+                            log("[ok] " + (want ? "双路输出已开启" : "已恢复单设备输出"));
                         }
-                        refresh();
                     }
                 });
             }
@@ -774,8 +786,7 @@ public class MainActivity extends Activity {
 
     private void applyStatus(String out) {
         int[] s = parseStatus(out);
-        int dual = s[0], usb = s[1], bt = s[2], btDev = s[3], usbDev = s[4];
-        String btName = field(out, "btname");
+        int dual = s[0], usb = s[1], btDev = s[3], usbDev = s[4];
 
         suppress = true;
         if (!busy) swDual.setChecked(dual == 1);   // 处理期间不要覆盖用户的意图
@@ -786,14 +797,6 @@ public class MainActivity extends Activity {
         if (usbOk) sbUsb.setProgress(usb);
         tvUsb.setText(usbOk ? String.valueOf(sbUsb.getProgress()) : "—");
         fold(cardUsb, usbDev == 1);
-
-        // 蓝牙耳机：同样折叠，标题写明是哪副耳机
-        boolean btOk = (bt >= 0 && bt <= 100);
-        sbBt.setEnabled(btOk);
-        if (btOk) sbBt.setProgress(bt);
-        tvBt.setText(btOk ? String.valueOf(sbBt.getProgress()) : "—");
-        btTitle.setText(btName.length() > 0 ? "蓝牙耳机 · " + btName : "蓝牙耳机 音量");
-        fold(cardBt, btDev == 1);
 
         // 两个设备都齐了才需要「重新应用」
         fold(cardRedo, btDev == 1 && usbDev == 1);

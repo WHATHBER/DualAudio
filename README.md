@@ -4,7 +4,7 @@
 
 # DualAudio · 双路音频
 
-**让蓝牙耳机和 USB 声卡（有线耳机）同时出声，并且能分别独立控制两路音量**
+**让蓝牙耳机和 USB 声卡（有线耳机）同时出声；有线那一路的硬件音量可独立调节，蓝牙音量用系统音量键控制**
 
 基于 Android 12+ 原生「组合音频设备路由」· Material 3 界面 · 需 Root
 
@@ -26,7 +26,7 @@ DualAudio 通过调用 Android 12 引入的**组合音频设备路由**（Combin
 
 - **双路同时输出** —— 蓝牙耳机 + USB 声卡 播放同一路媒体音频
 - **USB 声卡硬件音量独立调节** —— 解决「有线那一路声音大到炸耳朵」且音量键调不动的问题
-- **蓝牙音量独立调节** —— 不受主设备判定影响
+- **蓝牙音量交给系统音量键** —— 原因见下方「为什么没有蓝牙音量滑块」一节
 - **Material 3 深色界面** —— 设备不在线时自动折叠对应卡片，不显示无效控件
 - **开启前校验** —— 点击开关先验证设备是否就绪，失败回滚并提示原因，杜绝连点堆积命令
 - **完整命令行工具** —— 逻辑层可脱离 App 独立运行，便于调试与二次开发
@@ -93,15 +93,28 @@ tinymix -D <card> "PCM Playback Volume" <left> <right>
 
 > 顺带一提，`AudioManager.setStreamVolume` 只作用于「主设备」，所以即使音量键能调蓝牙，也永远调不到 USB 声卡 —— 这就是它炸耳朵的根因。
 
-### 5. 蓝牙音量：临时独占策略
+### 5. 为什么没有蓝牙音量滑块
 
-`AudioManager.setStreamVolume` 只影响当前主设备。要让指定设备成为主设备：
+手机上蓝牙耳机的音量由 **AVRCP 绝对音量**同步，通道是「手机 → 耳机」。这个同步有两个坑：
 
+**① `setDeviceVolumeBehavior` 对蓝牙的含义完全不同。** AudioService 里的实际逻辑是：
+
+```java
+if (device.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
+    // 不是"设置音量行为"，而是"是否启用绝对音量同步"
+    avrcpSupportsAbsoluteVolume(device.getAddress(),
+            deviceVolumeBehavior == AudioManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE);
+    return;
+}
 ```
-1. setPreferredDevicesForStrategy(strategy, [该设备])
-2. setStreamVolume(...)          // 此时它就是主设备
-3. setPreferredDevicesForStrategy(strategy, [全部设备])   // 恢复
-```
+
+传入任何非 `ABSOLUTE` 的值都会**关闭绝对音量同步**，之后手机侧音量再也传不到耳机 —— 表现为「音量键和程序都调不动蓝牙」。
+
+**② 双路输出时，系统会在约 1 秒后重算音量。** 设好的值会先正常写入，随后被按多设备规则改回。这正是用「独占 → 设置 → 恢复双路」那套流程改蓝牙音量的副作用：路由切换触发了重算。
+
+经实测，这条路上稳定可控的只有系统自身的音量键，因此 App 不做蓝牙音量滑块。逻辑层保留了 `vol bt <0-100>` 命令，但受上述限制，不保证在所有机型上生效。
+
+> 作为补偿，App 启动时会自动确认蓝牙的绝对音量处于开启状态（`status fix`），否则连音量键都会失效。
 
 ### 6. App 架构：通过 su 调用 app_process
 
@@ -162,7 +175,7 @@ adb shell su -c "app_process -Djava.class.path=/data/local/tmp/MultiAudio.dex \
 
 | 设备 | 系统 | 结果 |
 |---|---|---|
-| 小米 14 Ultra | HyperOS 3（Android 16） | ✅ 双路输出 + 两路音量调节均正常 |
+| 小米 14 Ultra | HyperOS 3（Android 16） | ✅ 双路输出正常 + USB 声卡硬件音量可调 |
 | OPPO Enco X3（蓝牙）+ USB-Audio CDSP 声卡 | — | ✅ |
 
 **其他机型欢迎提交测试结果。** 关键变量是厂商音频 HAL 是否实现了输出流复用 —— 即使 API 返回成功，也可能只有一路出声。
@@ -188,10 +201,16 @@ adb shell su -c "app_process -Djava.class.path=/data/local/tmp/MultiAudio.dex \
 API 层可能已接受（返回 `true`），但厂商 HAL 未真正复用输出流。试 `sysapi` 与 `list` 确认状态，或换编码器后重试。
 
 **Q: 音量键还是只影响蓝牙？**
-符合预期。系统音量键只作用于主设备。请使用 App 内的两个滑块分别调节。
+符合预期。双路输出时主设备是蓝牙，所以音量键调蓝牙；**USB 声卡不受主设备音量影响**，需在 App 内用它的滑块（走 ALSA 硬件增益）。这也是蓝牙音量不做成滑块的原因，详见「为什么没有蓝牙音量滑块」。
 
 **Q: USB 声卡音量调不动？**
 先确认 `tinymix -D <card>` 能列出 `PCM Playback Volume` 控件；若控件名不同，用 `8_usbvol.sh` 修改控件名。
+
+**Q: 蓝牙耳机音量调不动，连音量键也失效了？**
+说明耳机的 **AVRCP 绝对音量同步**被关闭了（见「为什么没有蓝牙音量滑块」）。重新打开 App 会自动修复（启动时执行 `status fix`）；也可断开蓝牙重连一次。
+
+**Q: 蓝牙耳机音量调不动，连音量键也失效了？**
+说明耳机的 **AVRCP 绝对音量同步**被关闭了（见「为什么没有蓝牙音量滑块」）。重新打开 App 会自动修复 —— 启动时执行的 `status fix` 会把绝对音量重新打开。也可以断开蓝牙重连一次。
 
 **Q: 重启后要重新设置吗？**
 是的，绑定是运行时状态。可自行编写开机脚本，或每次开机点一下「重新应用」。

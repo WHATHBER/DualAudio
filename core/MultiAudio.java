@@ -21,7 +21,7 @@ import java.util.*;
 public class MultiAudio {
 
     /** 逻辑层版本号 —— App 会核对这个值，确保部署到手机上的不是旧 dex */
-    static final int DEX_VER = 20;
+    static final int DEX_VER = 21;
 
     static Object am;                                  // AudioManager (可能为 null)
     static Object iaudioService;                       // IAudioService (降级通道)
@@ -97,6 +97,9 @@ public class MultiAudio {
                 clear(sid);
                 System.out.println("res=ok");
             } else if ("status".equals(args[0])) {
+                // status fix：顺带确保蓝牙绝对音量处于开启状态。
+                // 该开关一旦被关闭，手机侧音量就传不到耳机（音量键也会失效）。
+                if (args.length > 1 && "fix".equals(args[1])) ensureBtAbsoluteVolume();
                 status();
             } else if ("sysapi".equals(args[0])) {
                 sysApi();
@@ -583,6 +586,18 @@ public class MultiAudio {
             if (targetMatches(target, num(call(d, "getType")))) return d;
         }
         return null;
+    }
+
+    /** 确保蓝牙的 AVRCP 绝对音量处于开启状态（关闭后手机侧音量无法传给耳机） */
+    static void ensureBtAbsoluteVolume() {
+        try {
+            int abs = volumeBehaviorConst("DEVICE_VOLUME_BEHAVIOR_ABSOLUTE", 4);
+            Object[] devs = (Object[]) findMethod(am.getClass(), "getDevices", 1).invoke(am, 2);
+            for (Object d : devs) {
+                if (isBtOut(num(call(d, "getType")))) setDevVolumeBehavior(d, abs);
+            }
+        } catch (Throwable ignore) {
+        }
     }
 
     static void setDevVolumeBehavior(Object info, int behavior) {
